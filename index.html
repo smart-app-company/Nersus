@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Controller - Host v2.6.0</title>
+    <!-- JSZip & FileSaver -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background-color: #0f0f13; color: #fff; margin: 0; padding: 40px; text-align: center; }
+        .glass-panel { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border-radius: 16px; padding: 30px; margin: 20px auto; max-width: 600px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+        .pin-code { font-size: 48px; font-weight: bold; color: #00ff88; letter-spacing: 4px; margin: 20px 0; }
+        .btn { background: linear-gradient(135deg, #00ff88, #00cc6a); color: #000; padding: 15px 30px; font-size: 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: transform 0.2s; }
+        .btn:hover { transform: scale(1.05); }
+        .device-list { text-align: right; margin-top: 20px; }
+        .device-item { background: rgba(0,255,136,0.1); border-left: 4px solid #00ff88; padding: 10px; margin-bottom: 10px; border-radius: 4px; display: flex; justify-content: space-between; }
+    </style>
+</head>
+<body>
+    <div class="glass-panel">
+        <h1>Nexus Host v2.6.0</h1>
+        <p>קוד החדר שלך לחיבור השלט:</p>
+        <div class="pin-code" id="pinDisplay">טוען...</div>
+        <p>הכנס קוד זה באפליקציית הנייד.</p>
+    </div>
+
+    <div class="glass-panel">
+        <h2>שלטים מחוברים (<span id="deviceCount">0</span>)</h2>
+        <div class="device-list" id="deviceList">
+            <!-- רשימת מכשירים תתווסף כאן דינמית -->
+        </div>
+    </div>
+
+    <button class="btn" onclick="downloadFullProject()">הורד חבילת התקנה מלאה (ZIP)</button>
+
+    <script>
+        // יצירת קוד PIN אקראי
+        const randomPin = 'NEXUS-' + Math.floor(1000 + Math.random() * 9000);
+        document.getElementById('pinDisplay').innerText = randomPin;
+
+        // Firebase Setup (הכנס את פרטי הפרויקט שלך כאן)
+        const firebaseConfig = {
+            // TODO: Add your Firebase config here
+            projectId: "your-project-id"
+        };
+        // firebase.initializeApp(firebaseConfig);
+        // const db = firebase.firestore();
+        
+        // עדכון סטטוס חדר ב-Firestore (לדוגמה)
+        // db.collection('rooms').doc(randomPin).set({ active: true, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+
+        // האזנה לחיבורי WebSocket (מ-server.js)
+        const ws = new WebSocket('ws://localhost:3000');
+        let connectedDevices = 0;
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if(data.type === 'device-connected') {
+                connectedDevices++;
+                updateDeviceList(data.id, data.ip, data.deviceName || 'Mobile Gamepad');
+            } else if(data.type === 'device-disconnected') {
+                connectedDevices--;
+                document.getElementById('dev-' + data.id)?.remove();
+                document.getElementById('deviceCount').innerText = connectedDevices;
+            }
+        };
+
+        function updateDeviceList(id, ip, name) {
+            document.getElementById('deviceCount').innerText = connectedDevices;
+            const list = document.getElementById('deviceList');
+            const item = document.createElement('div');
+            item.className = 'device-item';
+            item.id = 'dev-' + id;
+            item.innerHTML = \`<span>\${name} (P\${connectedDevices})</span><span>\${ip}</span>\`;
+            list.appendChild(item);
+        }
+
+        // פונקציית יצירת ה-ZIP המלאה
+        function downloadFullProject() {
+            const zip = new JSZip();
+
+            // 1. package.json עם הרשאות UAC
+            zip.file("package.json", JSON.stringify({
+                "name": "nexus-controller",
+                "version": "2.6.0",
+                "main": "main.js",
+                "scripts": { "start": "electron .", "build": "electron-builder --win nsis" },
+                "dependencies": { "express": "^4.18.2", "ws": "^8.13.0", "vigemclient": "^1.1.2" },
+                "devDependencies": { "electron": "^25.3.0", "electron-builder": "^24.4.0" },
+                "build": {
+                    "appId": "com.nexus.gamepad",
+                    "win": { "target": "nsis", "requestedExecutionLevel": "requireAdministrator" },
+                    "nsis": { "executionLevel": "requireAdministrator", "oneClick": false }
+                }
+            }, null, 2));
+
+            // 2. main.js - מנוע Electron ו-ViGEmBus
+            zip.file("main.js", \`const { app, BrowserWindow } = require('electron');
+const { ViGEmClient } = require('vigemclient');
+const setupServer = require('./server');
+
+let mainWindow, vigemClient, virtualController;
+
+app.whenReady().then(() => {
+  mainWindow = new BrowserWindow({ width: 1200, height: 800, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+  mainWindow.loadFile('desktop_host.html');
+
+  try {
+    vigemClient = new ViGEmClient();
+    vigemClient.connect();
+    virtualController = vigemClient.createX360Controller();
+    virtualController.connect();
+  } catch (error) {
+    console.error("ViGEmBus Error: Driver missing", error);
+  }
+
+  setupServer(mainWindow, virtualController);
+});\`);
+
+            // 3. server.js - שרת WebSocket והזרקת כפתורים
+            zip.file("server.js", \`const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+
+module.exports = function(mainWindow, virtualController) {
+  const server = http.createServer(express());
+  const wss = new WebSocket.Server({ server });
+
+  const map = { 'A': 'A', 'B': 'B', 'X': 'X', 'Y': 'Y' };
+
+  wss.on('connection', (ws, req) => {
+    mainWindow.webContents.executeJavaScript(\`ws.send(JSON.stringify({type: 'device-connected', id: '\${ws._ultron.id}', ip: '\${req.socket.remoteAddress}'}))\`);
+    
+    ws.on('message', (msg) => {
+      const data = JSON.parse(msg);
+      if(data.type === 'button' && virtualController && map[data.button]) {
+        virtualController.button[map[data.button]].setValue(data.pressed);
+      }
+    });
+    
+    ws.on('close', () => mainWindow.webContents.executeJavaScript(\`ws.send(JSON.stringify({type: 'device-disconnected', id: '\${ws._ultron.id}'}))\`));
+  });
+
+  server.listen(3000);
+};\`);
+
+            // 4. mobile_controller.html - כולל אנימציית טעינה, Firestore UI ובדיקת קוד
+            zip.file("mobile_controller.html", \`<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <style>
+        body { margin: 0; background: #111; color: #fff; height: 100vh; width: 100vw; overflow: hidden; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        #toast { display: none; background: #ff4444; padding: 15px; border-radius: 8px; position: absolute; top: 20px; z-index: 100; }
+        /* Buffering Animation */
+        #loader { display: none; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; background: #111; z-index: 50; }
+        .bubbles { display: flex; justify-content: center; align-items: center; height: 100%; gap: 10px; }
+        .bubble { width: 20px; height: 20px; background: #00ff88; border-radius: 50%; animation: bounce 1s infinite alternate; }
+        @keyframes bounce { to { transform: translateY(-30px); } }
+        /* Gamepad UI */
+        #gamepad { display: none; width: 100%; height: 100%; }
+        .btn-game { width: 80px; height: 80px; border-radius: 50%; background: rgba(255,255,255,0.1); border: 2px solid #00ff88; color: #00ff88; font-size: 30px; }
+    </style>
+</head>
+<body>
+    <div id="toast">קוד לא נכון או חדר האירוח לא קיים. נסה שוב.</div>
+    
+    <div id="login">
+        <h2>התחבר למארח</h2>
+        <input type="text" id="pinInput" placeholder="הכנס קוד חדר (למשל NEXUS-1234)">
+        <button onclick="connectRoom()">התחבר</button>
+    </div>
+
+    <div id="loader">
+        <div class="bubbles">
+            <div class="bubble"></div><div class="bubble" style="animation-delay: 0.2s"></div><div class="bubble" style="animation-delay: 0.4s"></div>
+        </div>
+    </div>
+
+    <div id="gamepad">
+        <button class="btn-game" ontouchstart="sendInput('X', true)" ontouchend="sendInput('X', false)">X</button>
+    </div>
+
+    <script>
+        let ws;
+        function connectRoom() {
+            const pin = document.getElementById('pinInput').value;
+            // כאן מתבצעת בדיקת Firestore (סימולציה)
+            if(!pin.startsWith('NEXUS-')) {
+                document.getElementById('toast').style.display = 'block';
+                setTimeout(() => document.getElementById('toast').style.display = 'none', 3000);
+                return;
+            }
+            
+            document.getElementById('login').style.display = 'none';
+            document.getElementById('loader').style.display = 'block';
+
+            setTimeout(() => {
+                ws = new WebSocket('ws://' + window.location.hostname + ':3000');
+                ws.onopen = () => {
+                    document.getElementById('loader').style.display = 'none';
+                    document.getElementById('gamepad').style.display = 'flex';
+                };
+            }, 2500); // אנימציית טעינה של 2.5 שניות
+        }
+
+        function sendInput(btn, state) {
+            if(ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'button', button: btn, pressed: state }));
+                // Haptic feedback
+                if(state && navigator.vibrate) navigator.vibrate(50);
+            }
+        }
+    </script>
+</body>
+</html>\`);
+
+            // 5-8. קובצי אוצווה (Batches)
+            zip.file("setup.bat", "@echo off\\nnpm install\\necho Setup Complete!\\npause");
+            zip.file("run.bat", "@echo off\\nnpm start");
+            zip.file("build.bat", "@echo off\\nnpm run build\\npause");
+            
+            // 9. AppxManifest.xml
+            zip.file("AppxManifest.xml", \`<?xml version="1.0" encoding="utf-8"?><Package><Identity Name="NexusGamepad" Version="2.6.0.0" /></Package>\`);
+            
+            // 10. firestore.rules
+            zip.file("firestore.rules", \`rules_version = '2'; service cloud.firestore { match /databases/{database}/documents { match /rooms/{room} { allow read, write: if true; } } }\`);
+            
+            // 11. app.appinstaller
+            zip.file("app.appinstaller", \`<AppInstaller Version="2.6.0.0" />\`);
+            
+            // 12. desktop_installer_architecture_guide.md
+            zip.file("desktop_installer_architecture_guide.md", "# Nexus Architecture Guide\\nHost handles WebSocket and ViGEmBus.");
+            
+            // 13. fix_cert_guide.md
+            zip.file("fix_cert_guide.md", "# Cert Fix Guide\\nInstructions for bypassing UAC block on unverified apps.");
+
+            zip.generateAsync({ type: "blob" }).then(function(content) {
+                saveAs(content, "Nexus_Controller_Full_v2.6.0.zip");
+            });
+        }
+    </script>
+</body>
+            </html>

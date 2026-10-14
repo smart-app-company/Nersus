@@ -94,6 +94,19 @@
 </head>
 <body class="flex flex-col justify-between p-3 relative bg-slate-950 text-slate-100">
 
+    <!-- DISCONNECTION WARNING BANNER / OVERLAY -->
+    <div id="disconnection-overlay" class="fixed inset-0 z-[120] bg-slate-950/90 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center transition-all duration-300 opacity-0 pointer-events-none">
+        <div class="w-20 h-20 rounded-full bg-red-500/20 border border-red-500/50 flex items-center justify-center text-red-400 text-3xl mb-4 animate-bounce">
+            <i class="fa-solid fa-wifi"></i>
+        </div>
+        <h3 class="text-xl font-bold text-white mb-2">אין חיבור למארח</h3>
+        <p class="text-xs text-slate-300 max-w-xs leading-relaxed mb-6">ממתין להתחדשות החיבור מול המחשב המארח ברשת...</p>
+        <div class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-4 py-2 rounded-full text-xs text-amber-400 font-mono">
+            <i class="fa-solid fa-spinner fa-spin"></i>
+            <span>מנסה להתחבר מחדש באופן אוטומטי...</span>
+        </div>
+    </div>
+
     <!-- FULLSCREEN BUFFERING LOADER OVERLAY -->
     <div id="loader-screen" class="fixed inset-0 z-[100] w-screen h-screen bg-slate-950/98 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center transition-all duration-500 opacity-0 pointer-events-none">
         <div id="loader-anim-box" class="relative w-44 h-44 flex items-center justify-center mb-8">
@@ -130,7 +143,7 @@
         </div>
         
         <h1 class="text-2xl font-extrabold text-white mb-2">Nexus Mobile Controller</h1>
-        <p class="text-xs text-slate-400 max-w-xs mb-6">תמיכה ברמקול DualSense, משטח מגע, רטט מתקדם וסנכרון שלטים</p>
+        <p class="text-xs text-slate-400 max-w-xs mb-6">תמיכה ברמקול DualSense, משטח מגע, רטט מתקדם וריבוי שלטים</p>
 
         <div class="w-full max-w-xs space-y-3">
             <label class="block text-right text-xs font-bold text-cyan-400">הזן קוד PIN מהמחשב המארח:</label>
@@ -184,13 +197,7 @@
     </footer>
 
     <script>
-        let db = null;
-        let activePin = "";
-        let wsRelay = null;
-        let soundEnabled = true;
-        let audioCtx = null;
-        let currentSkin = "PlayStation DualSense";
-
+        // FIREBASE CLOUD CONFIGURATION
         const firebaseConfig = {
             apiKey: "AIzaSyDo6ci7yWcvXI_8oQyDl_fjBC7vy1CT5Wc",
             authDomain: "nexsus-ec154.firebaseapp.com",
@@ -201,16 +208,46 @@
             measurementId: "G-H5BPEZ9K8N"
         };
 
-        // 📱 זיהוי אוטומטי של שם המכשיר / דגם הסמארטפון
+        let db = null;
+        let activePin = "";
+        let wsRelay = null;
+        let soundEnabled = true;
+        let audioCtx = null;
+        let currentSkin = "PlayStation DualSense";
+        let isConnectedToHost = false;
+
         function detectDeviceName() {
             const ua = navigator.userAgent;
             if (/iPhone/i.test(ua)) return "iPhone Mobile Gamepad";
             if (/iPad/i.test(ua)) return "iPad Mobile Gamepad";
             if (/Samsung|Galaxy/i.test(ua)) return "Samsung Galaxy Controller";
             if (/Android/i.test(ua)) return "Android Mobile Gamepad";
-            if (/Macintosh/i.test(ua)) return "Mac Gamepad Unit";
-            if (/Windows/i.test(ua)) return "Windows Controller Unit";
             return "Mobile Gamepad Controller";
+        }
+
+        function setDisconnectionState(disconnected) {
+            const overlay = document.getElementById('disconnection-overlay');
+            const indicator = document.getElementById('conn-indicator');
+            
+            if (disconnected) {
+                isConnectedToHost = false;
+                if (overlay) {
+                    overlay.classList.remove('opacity-0', 'pointer-events-none');
+                    overlay.classList.add('opacity-100');
+                }
+                if (indicator) {
+                    indicator.className = 'w-3 h-3 rounded-full bg-red-500 animate-pulse';
+                }
+            } else {
+                isConnectedToHost = true;
+                if (overlay) {
+                    overlay.classList.add('opacity-0', 'pointer-events-none');
+                    overlay.classList.remove('opacity-100');
+                }
+                if (indicator) {
+                    indicator.className = 'w-3 h-3 rounded-full bg-emerald-400 animate-ping';
+                }
+            }
         }
 
         function showToast(msg) {
@@ -232,23 +269,9 @@
             const loader = document.getElementById('loader-screen');
             const title = document.getElementById('loader-status-title');
             const desc = document.getElementById('loader-status-desc');
-            const bubbles = document.getElementById('bubbles-ring');
-            const orb = document.getElementById('central-morph-orb');
-            const icon = document.getElementById('loader-gamepad-icon');
 
             if (title) title.innerText = statusTitle;
             if (desc) desc.innerText = statusDesc;
-
-            if (bubbles) bubbles.style.opacity = '1';
-            if (orb) {
-                orb.style.width = '80px';
-                orb.style.height = '80px';
-                orb.style.borderRadius = '50%';
-            }
-            if (icon) {
-                icon.style.opacity = '0';
-                icon.style.transform = 'scale(0.5)';
-            }
 
             if (loader) {
                 loader.classList.remove('opacity-0', 'pointer-events-none');
@@ -339,10 +362,12 @@
 
         function initFirebaseMobile() {
             try {
-                if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(firebaseConfig);
+                }
                 db = firebase.firestore();
             } catch (err) {
-                console.error('[FIRESTORE_ERR]', err);
+                console.error('[FIRESTORE_INIT_ERR]', err);
             }
         }
 
@@ -354,7 +379,6 @@
                 return;
             }
 
-            // השלמה אוטומטית של קידומת NEXUS- במידה והמשתמש הזין רק 4 ספרות
             if (!pin.startsWith('NEXUS-')) {
                 pin = 'NEXUS-' + pin;
             }
@@ -369,56 +393,87 @@
                 if (!roomDoc.exists || !roomDoc.data()?.host || roomDoc.data()?.host?.status !== 'online') {
                     setTimeout(() => {
                         stopLoadingAnimation();
-                        showToast("קוד לא נכון או חדר האירוח לא קיים, נא לנסות שוב עם קוד אחר.");
-                    }, 800);
+                        showToast("קוד לא נכון או חדר האירוח לא קיים/לא מחובר.");
+                    }, 600);
                     return;
                 }
 
                 activePin = pin;
+                const roomData = roomDoc.data();
+                const hostLocalIp = roomData?.host?.ip || window.location.hostname || 'localhost';
                 const detectedName = detectDeviceName();
+                const myDevId = 'ctrl_' + Math.random().toString(36).substring(2, 9);
                 const roomRef = db.collection('nexus_rooms').doc(pin);
 
                 await roomRef.set({
-                    controller: {
-                        status: 'online',
-                        deviceName: detectedName,
-                        connectedAt: firebase.firestore.FieldValue.serverTimestamp()
+                    controllers: {
+                        [myDevId]: {
+                            status: 'online',
+                            deviceName: detectedName,
+                            connectedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        }
                     }
                 }, { merge: true });
 
+                // Listen for host status and individual preset updates
                 roomRef.onSnapshot((snapshot) => {
                     const data = snapshot.data();
-                    if (data && data.host && data.host.activePreset) {
-                        setGameSkin(data.host.activePreset);
+                    if (data && data.controllers && data.controllers[myDevId] && data.controllers[myDevId].activePreset) {
+                        setGameSkin(data.controllers[myDevId].activePreset);
+                    }
+                    if (data && data.host && data.host.status === 'online') {
+                        setDisconnectionState(false);
+                    } else {
+                        setDisconnectionState(true);
                     }
                 });
 
-                // ניסיון חיבור Direct WebSocket אם הנייד באותה רשת, או מעבר שקוף ל-Firestore
-                try {
-                    const hostIp = window.location.hostname && window.location.hostname !== 'localhost' 
-                        ? window.location.hostname 
-                        : 'localhost';
-                    
-                    wsRelay = new WebSocket(`ws://${hostIp}:8888`);
-                    wsRelay.onopen = () => {
-                        wsRelay.send(JSON.stringify({ 
-                            type: 'REGISTER_CONTROLLER', 
-                            pin: pin, 
-                            deviceName: detectedName 
-                        }));
-                    };
-                } catch(e) {
-                    console.log('[WS_FALLBACK] Using Cloud Firestore signaling channel.');
-                }
+                // Attempt Direct WebSocket connection to PC Local IP or current server host
+                connectWebSocketRelay(pin, detectedName, hostLocalIp);
 
                 playMorphToGamepadAnimation(() => {
-                    document.getElementById('conn-indicator').className = 'w-3 h-3 rounded-full bg-emerald-400 animate-ping';
+                    setDisconnectionState(false);
                     document.getElementById('pairing-modal').classList.add('hidden');
                 });
 
             } catch (err) {
+                console.error('[CONNECT_ERR]', err);
                 stopLoadingAnimation();
-                showToast("שגיאה בהתחברות לשרת, אנא בדוק את חיבור האינטרנט ונסה שנית.");
+                showToast("שגיאה בהתחברות לשרת, נא לבדוק את חיבור האינטרנט.");
+            }
+        }
+
+        function connectWebSocketRelay(pin, deviceName, hostIpTarget) {
+            try {
+                const targetIp = hostIpTarget || window.location.hostname || 'localhost';
+                wsRelay = new WebSocket(`ws://${targetIp}:8888`);
+                
+                wsRelay.onopen = () => {
+                    setDisconnectionState(false);
+                    wsRelay.send(JSON.stringify({ 
+                        type: 'REGISTER_CONTROLLER', 
+                        pin: pin, 
+                        deviceName: deviceName 
+                    }));
+                };
+
+                wsRelay.onmessage = (evt) => {
+                    const data = JSON.parse(evt.data);
+                    if (data.type === 'APPLY_PRESET' && data.preset) {
+                        setGameSkin(data.preset);
+                    }
+                };
+
+                wsRelay.onclose = () => {
+                    // Fall back to Cloud Firestore mode gracefully
+                    console.warn('[WS_CLOSED] Direct WebSocket relay closed. Falling back to Cloud Firestore.');
+                };
+
+                wsRelay.onerror = () => {
+                    console.warn('[WS_ERR] Could not establish direct WebSocket link. Using Cloud Firestore channel.');
+                };
+            } catch(e) {
+                console.log('[WS_FALLBACK] Operating in Cloud Firestore channel mode.');
             }
         }
 
@@ -426,14 +481,19 @@
             triggerHaptic(key === 'PS_HOME' ? [30, 20, 30] : [15]);
             playDualSenseSound(key === 'PS_HOME' ? 'ps' : 'click');
 
-            // שליחה דרך WebSocket אם זמין, או הזרקה ישירה ל-Firestore inputs collection
+            let sentViaWs = false;
+
             if (wsRelay && wsRelay.readyState === WebSocket.OPEN) {
                 wsRelay.send(JSON.stringify({ type: 'CONTROLLER_INPUT', input: key, value: val, timestamp: Date.now() }));
-            } else if (db && activePin) {
+                sentViaWs = true;
+            }
+
+            // Always sync over Cloud Firestore for redundancy if WS unavailable or as backchannel
+            if (!sentViaWs && db && activePin) {
                 db.collection('nexus_rooms').doc(activePin).collection('inputs').add({ 
                     key: key, 
                     val: val, 
-                    ts: firebase.firestore.FieldValue.serverTimestamp() 
+                    ts: Date.now()
                 });
             }
         }
